@@ -1,5 +1,5 @@
 from __future__ import annotations
-import gc, logging, traceback, types, typing as t
+import os, gc, logging, traceback, types, typing as t
 import torch, bentoml, openllm
 from openllm_core._schemas import CompletionChunk, GenerationOutput, SampleLogprobs
 from openllm_core.utils import ReprMixin, is_ctranslate_available, is_vllm_available
@@ -148,7 +148,7 @@ class vLLMRunnable(bentoml.Runnable):
       )
     except Exception as err:
       traceback.print_exc()
-      raise openllm.exceptions.OpenLLMException(f'Failed to initialise vLLMEngine due to the following error:\n{err}\nopenllm.utils.device_count(): {dev}, num_gpus: {num_gpus}') from err
+      raise openllm.exceptions.OpenLLMException(f'Failed to initialise vLLMEngine due to the following error:\n{err}\nopenllm.utils.device_count(): {dev}, num_gpus: {num_gpus}, cuda_visible: {os.environ.get('CUDA_VISIBLE_DEVICES'}') from err
 
   @bentoml.Runnable.method(batchable=False)
   async def generate_iterator(self, prompt_token_ids, request_id, stop=None, adapter_name=None, **attrs):
