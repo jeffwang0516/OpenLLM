@@ -126,8 +126,8 @@ class vLLMRunnable(bentoml.Runnable):
     if dev >= 2:
       num_gpus = min(dev // 2 * 2, dev)
 
-    logger.info("openllm.utils.device_count(): %s", dev)
-    logger.info("num_gpus: %s", num_gpus)
+    logger.debug("openllm.utils.device_count(): %s", dev)
+    logger.debug("num_gpus: %s", num_gpus)
     quantise = llm.quantise if llm.quantise and llm.quantise in {'gptq', 'awq', 'squeezellm'} else None
     dtype = torch.float16 if quantise == 'gptq' else llm._torch_dtype  # NOTE: quantise GPTQ doesn't support bfloat16 yet.
     try:
