@@ -1,5 +1,5 @@
 from __future__ import annotations
-import gc, traceback, types, typing as t
+import gc, logging, traceback, types, typing as t
 import torch, bentoml, openllm
 from openllm_core._schemas import CompletionChunk, GenerationOutput, SampleLogprobs
 from openllm_core.utils import ReprMixin, is_ctranslate_available, is_vllm_available
@@ -10,7 +10,7 @@ if t.TYPE_CHECKING:
 
 _registry = {}
 __all__ = ['runner']
-
+logger = logging.getLogger(__name__)
 
 def registry(cls=None, *, alias=None):
   def decorator(_cls):
@@ -125,6 +125,9 @@ class vLLMRunnable(bentoml.Runnable):
     num_gpus, dev = 1, openllm.utils.device_count()
     if dev >= 2:
       num_gpus = min(dev // 2 * 2, dev)
+
+    logger.info("openllm.utils.device_count(): %s", dev)
+    logger.info("num_gpus: %s", num_gpus)
     quantise = llm.quantise if llm.quantise and llm.quantise in {'gptq', 'awq', 'squeezellm'} else None
     dtype = torch.float16 if quantise == 'gptq' else llm._torch_dtype  # NOTE: quantise GPTQ doesn't support bfloat16 yet.
     try:
