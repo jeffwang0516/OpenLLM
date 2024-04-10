@@ -27,6 +27,7 @@ CONFIG_MAPPING_NAMES = OrderedDict(
     ('baichuan', 'BaichuanConfig'),
     ('chatglm', 'ChatGLMConfig'),
     ('falcon', 'FalconConfig'),
+    ('gemma', 'GemmaConfig'),
     ('gpt_neox', 'GPTNeoXConfig'),
     ('dolly_v2', 'DollyV2Config'),
     ('stablelm', 'StableLMConfig'),
@@ -121,6 +122,9 @@ class AutoConfig:
   @t.overload
   @classmethod
   def for_model(cls, model_name: t.Literal['flan_t5'], **attrs: t.Any) -> openllm_core.config.FlanT5Config: ...
+  @t.overload
+  @classmethod
+  def for_model(cls, model_name: t.Literal['gemma'], **attrs: t.Any) -> openllm_core.config.GemmaConfig: ...
   @t.overload
   @classmethod
   def for_model(cls, model_name: t.Literal['gpt_neox'], **attrs: t.Any) -> openllm_core.config.GPTNeoXConfig: ...
