@@ -184,7 +184,7 @@ class PyTorchRunnable(bentoml.Runnable):
       max_src_len = context_length - max_new_tokens - 1
     prompt_token_ids = prompt_token_ids[-max_src_len:]
 
-    stop_token_ids = [self.tokenizer.encode(it) for it in stop]
+    stop_token_ids = [t for t in self.tokenizer.convert_tokens_to_ids(stop) if t is not None] 
     if self.tokenizer.eos_token_id not in stop_token_ids:  # add eos token
       stop_token_ids.append(self.tokenizer.eos_token_id)
 
