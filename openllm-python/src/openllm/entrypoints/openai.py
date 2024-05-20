@@ -6,6 +6,7 @@ from http import HTTPStatus
 
 import aiohttp
 import orjson
+import bentoml
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
@@ -258,8 +259,11 @@ async def chat_completions(req, llm):
     logger.error('Error generating completion: %s', err)
     # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
     # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
-    if err.__cause__ and isinstance(err.__cause__, aiohttp.ClientPayloadError):
-      return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
+    if err.__cause__:
+      if isinstance(err.__cause__, aiohttp.ClientPayloadError):
+        return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
+      elif isinstance(err.__cause__, bentoml.exceptions.RemoteException):
+        return error_response(HTTPStatus.SERVICE_UNAVAILABLE , 'Failed to connect to Model runner. Check if the runner is ready.')
     return error_response(HTTPStatus.INTERNAL_SERVER_ERROR, f'Exception: {err!s} (check server log)')
 
 
@@ -410,6 +414,9 @@ async def completions(req, llm):
     logger.error('Error generating completion: %s', err)
     # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
     # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
-    if err.__cause__ and isinstance(err.__cause__, aiohttp.ClientPayloadError):
-      return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
+    if err.__cause__:
+      if isinstance(err.__cause__, aiohttp.ClientPayloadError):
+        return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
+      elif isinstance(err.__cause__, bentoml.exceptions.RemoteException):
+        return error_response(HTTPStatus.SERVICE_UNAVAILABLE , 'Failed to connect to Model runner. Check if the runner is ready.')
     return error_response(HTTPStatus.INTERNAL_SERVER_ERROR, f'Exception: {err!s} (check server log)')
