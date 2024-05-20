@@ -4,6 +4,7 @@ import time
 import traceback
 from http import HTTPStatus
 
+import aiohttp
 import orjson
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
@@ -255,6 +256,10 @@ async def chat_completions(req, llm):
   except Exception as err:
     traceback.print_exc()
     logger.error('Error generating completion: %s', err)
+    # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
+    # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
+    if err.__cause__ and isinstance(err.__cause__, aiohttp.ClientPayloadError):
+      return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
     return error_response(HTTPStatus.INTERNAL_SERVER_ERROR, f'Exception: {err!s} (check server log)')
 
 
@@ -403,4 +408,8 @@ async def completions(req, llm):
   except Exception as err:
     traceback.print_exc()
     logger.error('Error generating completion: %s', err)
+    # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
+    # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
+    if err.__cause__ and isinstance(err.__cause__, aiohttp.ClientPayloadError):
+      return error_response(HTTPStatus.INSUFFICIENT_STORAGE , 'Model runner failed to complete generation')
     return error_response(HTTPStatus.INTERNAL_SERVER_ERROR, f'Exception: {err!s} (check server log)')
