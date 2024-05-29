@@ -197,7 +197,7 @@ class PyTorchRunnable(bentoml.Runnable):
       output_token_ids = list(prompt_token_ids)
       input_len = len(prompt_token_ids)
 
-      past_key_values = out = token = start_ids = None
+      past_key_values = out = token = start_ids = input_ids = None
       finish_reason = None
       prompt_logprobs = []
       prompt_token_indices = []
@@ -222,15 +222,17 @@ class PyTorchRunnable(bentoml.Runnable):
               out = self.model(input_ids=start_ids, use_cache=True)
               logits = out.logits
           elif self.is_encoder_decoder:  # decoding
+            input_ids = torch.as_tensor([[token]], device=self.device)
             out = self.model.decoder(
-              input_ids=torch.as_tensor([[token]], device=self.device),
+              input_ids=input_ids,
               encoder_hidden_states=encoder_output,
               past_key_values=past_key_values,
               use_cache=True,
             )
             logits = self.model.lm_head(out[0])
           else:
-            out = self.model(input_ids=torch.as_tensor([[token]], device=self.device), past_key_values=past_key_values, use_cache=True)
+            input_ids = torch.as_tensor([[token]], device=self.device)
+            out = self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
             logits = out.logits
           past_key_values = out.past_key_values
           if logits_processor:
@@ -328,11 +330,12 @@ class PyTorchRunnable(bentoml.Runnable):
           prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
           request_id=request_id,
         ).model_dump_json()
-      except torch.cuda.OutOfMemoryError as err:
-        logger.error("CUDA out of memory error occurred. force runner reload", exc_info=err)
+      except Exception as err:
+        logger.error("Exception occurred in the middle of generation. force runner reload", exc_info=err)
         raise SystemExit(1)
       finally:
         # Clean
-        del past_key_values, out, start_ids
+        logger.info("cleaning gpu cache...")
+        del past_key_values, out, start_ids, input_ids
         gc.collect()
         torch.cuda.empty_cache()
