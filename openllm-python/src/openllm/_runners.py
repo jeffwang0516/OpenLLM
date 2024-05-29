@@ -176,7 +176,7 @@ class PyTorchRunnable(bentoml.Runnable):
       self.model.set_adapter(adapter_name)
 
     max_new_tokens = attrs.pop('max_new_tokens', 256)
-    context_length = attrs.pop('context_length', None)
+    context_length = self.llm._max_model_len or attrs.pop('context_length', None)
     if context_length is None:
       context_length = get_context_length(self.model.config)
     if self.model.config.is_encoder_decoder:

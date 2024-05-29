@@ -257,6 +257,8 @@ async def chat_completions(req, llm):
   except Exception as err:
     traceback.print_exc()
     logger.error('Error generating completion: %s', err)
+    if isinstance(err, ValueError):
+      return error_response(HTTPStatus.BAD_REQUEST, f'Invalid request: {err!s}')
     # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
     # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
     if err.__cause__:
@@ -412,6 +414,8 @@ async def completions(req, llm):
   except Exception as err:
     traceback.print_exc()
     logger.error('Error generating completion: %s', err)
+    if isinstance(err, ValueError):
+      return error_response(HTTPStatus.BAD_REQUEST, f'Invalid request: {err!s}')
     # Handling ClientPayloadError that often indicates runner OOM (runner stops generating content)
     # RuntimeError: Exception caught during generation: Response payload is not completed: <TransferEncodingError: 400, message='Not enough data for satisfy transfer length header.'>
     if err.__cause__:
