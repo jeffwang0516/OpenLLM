@@ -1,5 +1,5 @@
 from __future__ import annotations
-import gc, traceback, types, typing as t
+import gc, logging, traceback, types, typing as t
 import torch, bentoml, openllm
 from openllm_core._schemas import CompletionChunk, GenerationOutput, SampleLogprobs
 from openllm_core.utils import ReprMixin, is_ctranslate_available, is_vllm_available
@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
   from openllm_core._typing_compat import M, T
   from ._runners import Runner
 
+logger = logging.getLogger(__name__)
 _registry = {}
 __all__ = ['runner']
 
@@ -327,15 +328,11 @@ class PyTorchRunnable(bentoml.Runnable):
           prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
           request_id=request_id,
         ).model_dump_json()
-      except Exception as err:
-        # traceback.print_exc()
-        raise err
+      except torch.cuda.OutOfMemoryError as err:
+        logger.error("CUDA out of memory error occurred. force runner reload", exc_info=err)
+        raise SystemExit(1)
       finally:
+        # Clean
         del past_key_values, out, start_ids
         gc.collect()
         torch.cuda.empty_cache()
-
-    # # Clean
-    # del past_key_values, out, start_ids
-    # gc.collect()
-    # torch.cuda.empty_cache()
