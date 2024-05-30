@@ -102,11 +102,41 @@ class LLM(t.Generic[M, T]):
         raise ValueError('Either prompt or prompt_token_ids must be specified.')
       prompt_token_ids = self.tokenizer.encode(prompt)
 
+    # validate prompt length
+    model_config = config.model_dump(flatten=True)
+    max_model_len = self._max_model_len or 4096 # default to 4k tokens
+    logger.info('Model max length: %d', max_model_len)
+    max_new_tokens = model_config.get('max_new_tokens', None)
+    logger.info('Max new tokens: %s', max_new_tokens)
+    token_num = len(prompt_token_ids)
+    logger.info('Prompt token length: %d', token_num)
+
+
+    if max_new_tokens is None:
+      if token_num >= max_model_len:
+        raise ValueError(
+          f"This model's maximum context length is "
+          f"{max_model_len} tokens. However, you requested "
+          f"{token_num} tokens in the messages, "
+          f"Please reduce the length of the messages.", )
+      max_new_tokens = max_model_len - token_num
+
+    if token_num + max_new_tokens > max_model_len:
+      raise ValueError(
+          f"This model's maximum context length is "
+          f"{max_model_len} tokens. However, you requested "
+          f"{max_new_tokens + token_num} tokens "
+          f"({token_num} in the messages, "
+          f"{max_new_tokens} in the completion). "
+          f"Please reduce the length of the messages or completion.", )
+
+    model_config['max_new_tokens'] = max_new_tokens
+
     request_id = gen_random_uuid() if request_id is None else request_id
     previous_texts, previous_num_tokens = [''] * config['n'], [0] * config['n']
     try:
       generator = self.runner.generate_iterator.async_stream(
-        prompt_token_ids, request_id, stop=list(stop), adapter_name=adapter_name, **config.model_dump(flatten=True)
+        prompt_token_ids, request_id, stop=list(stop), adapter_name=adapter_name, **model_config
       )
     except Exception as err:
       raise RuntimeError(f'Failed to start generation task: {err}') from err

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import gc, traceback, types, typing as t
+import gc, logging, traceback, types, typing as t
 import torch, bentoml, openllm
 from openllm_core._schemas import CompletionChunk, GenerationOutput, SampleLogprobs
 from openllm_core.utils import ReprMixin, is_ctranslate_available, is_vllm_available
@@ -8,6 +8,7 @@ if t.TYPE_CHECKING:
   from openllm_core._typing_compat import M, T
   from ._runners import Runner
 
+logger = logging.getLogger(__name__)
 _registry = {}
 __all__ = ['runner']
 
@@ -175,7 +176,7 @@ class PyTorchRunnable(bentoml.Runnable):
       self.model.set_adapter(adapter_name)
 
     max_new_tokens = attrs.pop('max_new_tokens', 256)
-    context_length = attrs.pop('context_length', None)
+    context_length = self.llm._max_model_len or attrs.pop('context_length', None)
     if context_length is None:
       context_length = get_context_length(self.model.config)
     if self.model.config.is_encoder_decoder:
@@ -196,138 +197,145 @@ class PyTorchRunnable(bentoml.Runnable):
       output_token_ids = list(prompt_token_ids)
       input_len = len(prompt_token_ids)
 
-      if self.is_encoder_decoder:
-        if config['logprobs']:  # FIXME: logprobs is not supported
-          raise NotImplementedError('Logprobs is yet to be supported with encoder-decoder models.')
-        encoder_output = self.model.encoder(input_ids=torch.as_tensor([prompt_token_ids], device=self.device))[0]
-        start_ids = torch.as_tensor([[self.model.generation_config.decoder_start_token_id]], dtype=torch.int64, device=self.device)
-      else:
-        start_ids = torch.as_tensor([prompt_token_ids], device=self.device)
-
-      past_key_values = out = token = None
+      past_key_values = out = token = start_ids = input_ids = None
       finish_reason = None
       prompt_logprobs = []
       prompt_token_indices = []
       stopped = False
       sample_logprobs: SampleLogprobs = [None]  # The first token has no logprobs
 
-      for i in range(config['max_new_tokens']):
-        if i == 0:  # prefill
-          if self.is_encoder_decoder:
-            out = self.model.decoder(input_ids=start_ids, encoder_hidden_states=encoder_output, use_cache=True)
+      try:
+        if self.is_encoder_decoder:
+          if config['logprobs']:  # FIXME: logprobs is not supported
+            raise NotImplementedError('Logprobs is yet to be supported with encoder-decoder models.')
+          encoder_output = self.model.encoder(input_ids=torch.as_tensor([prompt_token_ids], device=self.device))[0]
+          start_ids = torch.as_tensor([[self.model.generation_config.decoder_start_token_id]], dtype=torch.int64, device=self.device)
+        else:
+          start_ids = torch.as_tensor([prompt_token_ids], device=self.device)
+
+        for i in range(config['max_new_tokens']):
+          if i == 0:  # prefill
+            if self.is_encoder_decoder:
+              out = self.model.decoder(input_ids=start_ids, encoder_hidden_states=encoder_output, use_cache=True)
+              logits = self.model.lm_head(out[0])
+            else:
+              out = self.model(input_ids=start_ids, use_cache=True)
+              logits = out.logits
+          elif self.is_encoder_decoder:  # decoding
+            input_ids = torch.as_tensor([[token]], device=self.device)
+            out = self.model.decoder(
+              input_ids=input_ids,
+              encoder_hidden_states=encoder_output,
+              past_key_values=past_key_values,
+              use_cache=True,
+            )
             logits = self.model.lm_head(out[0])
           else:
-            out = self.model(input_ids=start_ids, use_cache=True)
+            input_ids = torch.as_tensor([[token]], device=self.device)
+            out = self.model(input_ids=input_ids, past_key_values=past_key_values, use_cache=True)
             logits = out.logits
-        elif self.is_encoder_decoder:  # decoding
-          out = self.model.decoder(
-            input_ids=torch.as_tensor([[token]], device=self.device),
-            encoder_hidden_states=encoder_output,
-            past_key_values=past_key_values,
-            use_cache=True,
-          )
-          logits = self.model.lm_head(out[0])
-        else:
-          out = self.model(input_ids=torch.as_tensor([[token]], device=self.device), past_key_values=past_key_values, use_cache=True)
-          logits = out.logits
-        past_key_values = out.past_key_values
-        if logits_processor:
-          if config['repetition_penalty'] > 1.0:
-            tmp_output_ids: t.Any = torch.as_tensor([output_token_ids], device=self.device)
+          past_key_values = out.past_key_values
+          if logits_processor:
+            if config['repetition_penalty'] > 1.0:
+              tmp_output_ids: t.Any = torch.as_tensor([output_token_ids], device=self.device)
+            else:
+              tmp_output_ids = None
+            last_token_logits = logits_processor(tmp_output_ids, logits[:, -1, :])[0]
           else:
-            tmp_output_ids = None
-          last_token_logits = logits_processor(tmp_output_ids, logits[:, -1, :])[0]
+            last_token_logits = logits[0, -1, :]
+
+          # Switch to CPU by avoiding some bugs in mps backend.
+          if self.device.type == 'mps':
+            last_token_logits = last_token_logits.float().to('cpu')
+
+          # TODO: refactor for better sampling logic and apply penalties correctly
+          # support sequence generation, best_of
+          if config['temperature'] < 1e-5 or config['top_p'] < 1e-8:  # greedy
+            _, indices = torch.topk(last_token_logits, 2)
+          else:
+            probs = torch.softmax(last_token_logits, dim=-1, dtype=torch.float)
+            indices = torch.multinomial(probs, num_samples=2)
+          tokens = [int(token) for token in indices.tolist()]
+
+          token = tokens[0]
+          output_token_ids.append(token)
+          if config['logprobs']:
+            # NOTE: We can't use last_token_logits since logprobs is based on raw logits
+            logprobs = torch.log_softmax(logits[0, -1, :], dim=-1, dtype=torch.float)
+            token_logprobs = logprobs[token].item()
+            cumulative_logprob += token_logprobs
+
+          if config['prompt_logprobs']:
+            for token_id in prompt_token_ids:
+              if token_id in prompt_token_indices:
+                continue
+              prompt_token_indices.append(token_id)
+              prompt_logprobs.append({token_id: logprobs[token_id].item()})
+
+          stopped = token in stop_token_ids
+
+          tmp_output_ids, rfind_start = output_token_ids[input_len:], 0
+          # XXX: Move this to API server
+          text = self.tokenizer.decode(tmp_output_ids, skip_special_tokens=True, spaces_between_special_tokens=False, clean_up_tokenization_spaces=True)
+
+          if len(stop) > 0:
+            for it in stop:
+              pos = text.rfind(it, rfind_start)
+              if pos != -1:
+                text, stopped = text[:pos], True
+                break
+
+          if config['logprobs']:
+            sample_logprobs.append({token: token_logprobs})
+
+          # Skip potential incomplete byte sequence and proceed to next iteration
+          if not text.endswith("�"):
+            yield GenerationOutput(
+              prompt='',
+              finished=False,
+              outputs=[
+                CompletionChunk(
+                  index=0,
+                  text=text,
+                  token_ids=tmp_output_ids,
+                  cumulative_logprob=cumulative_logprob,
+                  logprobs=sample_logprobs if config['logprobs'] else None,
+                  finish_reason=None,
+                )
+              ],
+              prompt_token_ids=prompt_token_ids,
+              prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
+              request_id=request_id,
+            ).model_dump_json()
+          if stopped:
+            break
         else:
-          last_token_logits = logits[0, -1, :]
-
-        # Switch to CPU by avoiding some bugs in mps backend.
-        if self.device.type == 'mps':
-          last_token_logits = last_token_logits.float().to('cpu')
-
-        # TODO: refactor for better sampling logic and apply penalties correctly
-        # support sequence generation, best_of
-        if config['temperature'] < 1e-5 or config['top_p'] < 1e-8:  # greedy
-          _, indices = torch.topk(last_token_logits, 2)
-        else:
-          probs = torch.softmax(last_token_logits, dim=-1, dtype=torch.float)
-          indices = torch.multinomial(probs, num_samples=2)
-        tokens = [int(token) for token in indices.tolist()]
-
-        token = tokens[0]
-        output_token_ids.append(token)
-        if config['logprobs']:
-          # NOTE: We can't use last_token_logits since logprobs is based on raw logits
-          logprobs = torch.log_softmax(logits[0, -1, :], dim=-1, dtype=torch.float)
-          token_logprobs = logprobs[token].item()
-          cumulative_logprob += token_logprobs
-
-        if config['prompt_logprobs']:
-          for token_id in prompt_token_ids:
-            if token_id in prompt_token_indices:
-              continue
-            prompt_token_indices.append(token_id)
-            prompt_logprobs.append({token_id: logprobs[token_id].item()})
-
-        stopped = token in stop_token_ids
-
-        tmp_output_ids, rfind_start = output_token_ids[input_len:], 0
-        # XXX: Move this to API server
-        text = self.tokenizer.decode(tmp_output_ids, skip_special_tokens=True, spaces_between_special_tokens=False, clean_up_tokenization_spaces=True)
-
-        if len(stop) > 0:
-          for it in stop:
-            pos = text.rfind(it, rfind_start)
-            if pos != -1:
-              text, stopped = text[:pos], True
-              break
-
-        if config['logprobs']:
-          sample_logprobs.append({token: token_logprobs})
-
-        # Skip potential incomplete byte sequence and proceed to next iteration
-        if not text.endswith("�"):
-          yield GenerationOutput(
-            prompt='',
-            finished=False,
-            outputs=[
-              CompletionChunk(
-                index=0,
-                text=text,
-                token_ids=tmp_output_ids,
-                cumulative_logprob=cumulative_logprob,
-                logprobs=sample_logprobs if config['logprobs'] else None,
-                finish_reason=None,
-              )
-            ],
-            prompt_token_ids=prompt_token_ids,
-            prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
-            request_id=request_id,
-          ).model_dump_json()
+          finish_reason = 'length'
         if stopped:
-          break
-      else:
-        finish_reason = 'length'
-      if stopped:
-        finish_reason = 'stop'
-      yield GenerationOutput(
-        prompt='',
-        finished=True,
-        outputs=[
-          CompletionChunk(
-            index=0,
-            text=text,
-            token_ids=output_token_ids,
-            cumulative_logprob=cumulative_logprob,
-            logprobs=sample_logprobs if config['logprobs'] else None,
-            finish_reason=finish_reason,
-          )
-        ],
-        prompt_token_ids=prompt_token_ids,
-        prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
-        request_id=request_id,
-      ).model_dump_json()
-
-    # Clean
-    del past_key_values, out
-    gc.collect()
-    torch.cuda.empty_cache()
+          finish_reason = 'stop'
+        yield GenerationOutput(
+          prompt='',
+          finished=True,
+          outputs=[
+            CompletionChunk(
+              index=0,
+              text=text,
+              token_ids=output_token_ids,
+              cumulative_logprob=cumulative_logprob,
+              logprobs=sample_logprobs if config['logprobs'] else None,
+              finish_reason=finish_reason,
+            )
+          ],
+          prompt_token_ids=prompt_token_ids,
+          prompt_logprobs=prompt_logprobs if config['prompt_logprobs'] else None,
+          request_id=request_id,
+        ).model_dump_json()
+      except Exception as err:
+        logger.error("Exception occurred in the middle of generation. force runner reload", exc_info=err)
+        raise SystemExit(1)
+      finally:
+        # Clean
+        logger.info("cleaning gpu cache...")
+        del past_key_values, out, start_ids, input_ids
+        gc.collect()
+        torch.cuda.empty_cache()
