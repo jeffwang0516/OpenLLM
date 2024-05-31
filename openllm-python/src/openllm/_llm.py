@@ -105,7 +105,7 @@ class LLM(t.Generic[M, T]):
 
     # validate prompt length
     model_config = config.model_dump(flatten=True)
-    max_model_len = self._max_model_len or get_context_length(self.model.config)
+    max_model_len = self._max_model_len or get_context_length(self.hf_config) # default to hf model config
     logger.info('Model max length: %d', max_model_len)
     max_new_tokens = model_config.get('max_new_tokens', None)
     logger.info('Max new tokens: %s', max_new_tokens)
@@ -174,6 +174,7 @@ class LLM(t.Generic[M, T]):
   __llm_dtype__: t.Union[LiteralDtype, t.Literal['auto', 'half', 'float']] = 'auto'
   __llm_torch_dtype__: 'torch.dtype' = None
   __llm_config__: t.Optional[LLMConfig] = None
+  __llm_hf_config__: t.Optional[transformers.PretrainedConfig] = None
   __llm_backend__: LiteralBackend = None
   __llm_quantization_config__: t.Optional[t.Union[transformers.BitsAndBytesConfig, transformers.GPTQConfig, transformers.AwqConfig]] = None
   __llm_runner__: t.Optional[Runner[M, T]] = None
@@ -530,6 +531,18 @@ class LLM(t.Generic[M, T]):
         config = openllm.AutoConfig.infer_class_from_llm(self).model_construct_env(**self._model_attrs)
       self.__llm_config__ = config
     return self.__llm_config__
+
+  @property
+  def hf_config(self):
+    import transformers
+
+    if self.__llm_hf_config__ is None:
+      try:
+        hf_config = transformers.AutoConfig.from_pretrained(self.bentomodel.path, trust_remote_code=self.trust_remote_code)
+      except OpenLLMException:
+        hf_config = transformers.AutoConfig.from_pretrained(self.model_id, trust_remote_code=self.trust_remote_code)
+      self.__llm_hf_config__ = hf_config
+    return self.__llm_hf_config__
 
 
 @functools.lru_cache(maxsize=1)
