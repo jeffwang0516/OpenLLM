@@ -67,6 +67,7 @@ class LLM(t.Generic[M, T]):
 
   async def generate_iterator(self, prompt, prompt_token_ids=None, stop=None, stop_token_ids=None, request_id=None, adapter_name=None, **attrs):
     from bentoml._internal.runner.runner_handle import DummyRunnerHandle
+    from ._generation import get_context_length
 
     if adapter_name is not None and self.__llm_backend__ != 'pt':
       raise NotImplementedError(f'Adapter is not supported with {self.__llm_backend__}.')
@@ -104,7 +105,7 @@ class LLM(t.Generic[M, T]):
 
     # validate prompt length
     model_config = config.model_dump(flatten=True)
-    max_model_len = self._max_model_len or 4096 # default to 4k tokens
+    max_model_len = self._max_model_len or get_context_length(self.hf_config) # default to hf model config
     logger.info('Model max length: %d', max_model_len)
     max_new_tokens = model_config.get('max_new_tokens', None)
     logger.info('Max new tokens: %s', max_new_tokens)
@@ -173,6 +174,7 @@ class LLM(t.Generic[M, T]):
   __llm_dtype__: t.Union[LiteralDtype, t.Literal['auto', 'half', 'float']] = 'auto'
   __llm_torch_dtype__: 'torch.dtype' = None
   __llm_config__: t.Optional[LLMConfig] = None
+  __llm_hf_config__: t.Optional[transformers.PretrainedConfig] = None
   __llm_backend__: LiteralBackend = None
   __llm_quantization_config__: t.Optional[t.Union[transformers.BitsAndBytesConfig, transformers.GPTQConfig, transformers.AwqConfig]] = None
   __llm_runner__: t.Optional[Runner[M, T]] = None
@@ -529,6 +531,18 @@ class LLM(t.Generic[M, T]):
         config = openllm.AutoConfig.infer_class_from_llm(self).model_construct_env(**self._model_attrs)
       self.__llm_config__ = config
     return self.__llm_config__
+
+  @property
+  def hf_config(self):
+    import transformers
+
+    if self.__llm_hf_config__ is None:
+      try:
+        hf_config = transformers.AutoConfig.from_pretrained(self.bentomodel.path, trust_remote_code=self.trust_remote_code)
+      except OpenLLMException:
+        hf_config = transformers.AutoConfig.from_pretrained(self.model_id, trust_remote_code=self.trust_remote_code)
+      self.__llm_hf_config__ = hf_config
+    return self.__llm_hf_config__
 
 
 @functools.lru_cache(maxsize=1)
