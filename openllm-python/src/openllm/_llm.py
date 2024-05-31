@@ -67,6 +67,7 @@ class LLM(t.Generic[M, T]):
 
   async def generate_iterator(self, prompt, prompt_token_ids=None, stop=None, stop_token_ids=None, request_id=None, adapter_name=None, **attrs):
     from bentoml._internal.runner.runner_handle import DummyRunnerHandle
+    from ._generation import get_context_length
 
     if adapter_name is not None and self.__llm_backend__ != 'pt':
       raise NotImplementedError(f'Adapter is not supported with {self.__llm_backend__}.')
@@ -104,7 +105,7 @@ class LLM(t.Generic[M, T]):
 
     # validate prompt length
     model_config = config.model_dump(flatten=True)
-    max_model_len = self._max_model_len or 4096 # default to 4k tokens
+    max_model_len = self._max_model_len or get_context_length(self.model.config)
     logger.info('Model max length: %d', max_model_len)
     max_new_tokens = model_config.get('max_new_tokens', None)
     logger.info('Max new tokens: %s', max_new_tokens)
